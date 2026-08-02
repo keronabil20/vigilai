@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vigilai
+          POSTGRES_PASSWORD: vigilai
+          POSTGRES_DB: vigilai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vigilai -d vigilai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://vigilai:vigilai@localhost:5432/vigilai
+      REDIS_URL: redis://localhost:6379
+      AUTH_SECRET: ci-secret-at-least-32-characters-long
+      INTERNAL_API_SECRET: ci-internal
+      SUPPORT_STAFF_EMAILS: support@vigilai.local
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm --filter @vigilai/shared build
+      - run: pnpm --filter @vigilai/db build
+      - run: pnpm db:migrate
+      - run: pnpm --filter @vigilai/shared test
+      - run: pnpm --filter @vigilai/api test
+      - run: pnpm --filter @vigilai/agent test
+      - run: pnpm --filter @vigilai/workers test
+      - run: pnpm --filter @vigilai/shared typecheck
+      - run: pnpm --filter @vigilai/db typecheck
+      - run: pnpm --filter @vigilai/api typecheck
+      - run: pnpm --filter @vigilai/ingest typecheck
+      - run: pnpm --filter @vigilai/workers typecheck
+      - run: pnpm --filter @vigilai/agent typecheck

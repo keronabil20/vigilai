@@ -1,0 +1,11 @@
+{
+  "name": "@vigilai/config",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo ok",
+    "lint": "echo ok",
+    "typecheck": "echo ok",
+    "test": "echo ok"
+  }
+}
