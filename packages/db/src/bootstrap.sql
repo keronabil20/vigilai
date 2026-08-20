@@ -177,3 +177,92 @@ CREATE TABLE IF NOT EXISTS silence_windows (
   reason text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS rule_type varchar(20) NOT NULL DEFAULT 'threshold';
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS zscore_threshold double precision DEFAULT 3;
+
+CREATE TABLE IF NOT EXISTS metric_baselines (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  host_id uuid NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  metric_name varchar(120) NOT NULL,
+  ewma double precision NOT NULL,
+  ewmvar double precision NOT NULL DEFAULT 0,
+  samples integer NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS metric_baselines_host_metric_uidx ON metric_baselines (host_id, metric_name);
+
+CREATE TABLE IF NOT EXISTS metric_samples_1h (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  host_id uuid NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  bucket timestamptz NOT NULL,
+  metric_name varchar(120) NOT NULL,
+  avg_value double precision NOT NULL,
+  min_value double precision NOT NULL,
+  max_value double precision NOT NULL,
+  sample_count integer NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS metric_samples_1h_uidx ON metric_samples_1h (host_id, metric_name, bucket);
+CREATE INDEX IF NOT EXISTS metric_samples_1h_host_bucket_idx ON metric_samples_1h (host_id, bucket);
+
+CREATE TABLE IF NOT EXISTS log_lines (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  host_id uuid NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  time timestamptz NOT NULL,
+  path varchar(500) NOT NULL,
+  message text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS log_lines_host_time_idx ON log_lines (host_id, time DESC);
+CREATE INDEX IF NOT EXISTS log_lines_host_path_time_idx ON log_lines (host_id, path, time DESC);
+
+CREATE TABLE IF NOT EXISTS invites (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  email varchar(320) NOT NULL,
+  role membership_role NOT NULL DEFAULT 'member',
+  token_hash text NOT NULL,
+  invited_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  expires_at timestamptz NOT NULL,
+  accepted_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS invites_token_hash_uidx ON invites (token_hash);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS password_reset_token_hash_uidx ON password_reset_tokens (token_hash);
+
+CREATE TABLE IF NOT EXISTS hostinger_connections (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  api_token_enc text NOT NULL,
+  label varchar(200) DEFAULT 'Hostinger',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS platform_metrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name varchar(120) NOT NULL,
+  value double precision NOT NULL,
+  labels jsonb DEFAULT '{}'::jsonb,
+  time timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS platform_metrics_name_time_idx ON platform_metrics (name, time DESC);
+
+-- Dedupe open alerts before unique index (keep newest)
+DELETE FROM alerts a
+USING alerts b
+WHERE a.fingerprint = b.fingerprint
+  AND a.status IN ('open', 'acknowledged')
+  AND b.status IN ('open', 'acknowledged')
+  AND a.fired_at < b.fired_at;
+
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_open_fingerprint_uidx
+  ON alerts (fingerprint)
+  WHERE status IN ('open', 'acknowledged');

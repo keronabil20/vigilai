@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { collectMetrics, hostMeta, parseArgs, AGENT_VERSION } from "./collect.js";
+import {
+  collectMetrics,
+  hostMeta,
+  parseArgs,
+  readLogTail,
+  AGENT_VERSION,
+} from "./collect.js";
 
 async function postJson(
   url: string,
@@ -30,13 +36,21 @@ async function main() {
   const url =
     args.url ?? process.env.VIGILAI_INGEST_URL ?? "http://localhost:3002";
   const intervalSec = args.interval ?? 30;
+  const logPaths =
+    args.logs ??
+    (process.env.VIGILAI_LOG_PATHS
+      ? process.env.VIGILAI_LOG_PATHS.split(",").filter(Boolean)
+      : []);
 
   if (!token) {
     console.error("Missing --token or VIGILAI_TOKEN");
     process.exit(1);
   }
 
-  console.log(`VigilAI agent ${AGENT_VERSION} → ${url} every ${intervalSec}s`);
+  console.log(
+    `VigilAI agent ${AGENT_VERSION} → ${url} every ${intervalSec}s` +
+      (logPaths.length ? ` logs=[${logPaths.join(",")}]` : ""),
+  );
 
   const meta = hostMeta();
 
@@ -52,6 +66,15 @@ async function main() {
         ts: new Date().toISOString(),
         metrics,
       });
+      if (logPaths.length) {
+        const lines = readLogTail(logPaths, 10);
+        if (lines.length) {
+          await postJson(url, token, "/v1/ingest/logs", {
+            agent_version: AGENT_VERSION,
+            lines,
+          });
+        }
+      }
       console.log(
         `[ok] cpu=${metrics["cpu.usage_pct"]}% mem=${metrics["mem.used_pct"]}%`,
       );

@@ -3,7 +3,7 @@ import { collectMemUsedPct, parseArgs, AGENT_VERSION } from "./collect.js";
 
 describe("agent", () => {
   it("has version", () => {
-    expect(AGENT_VERSION).toBe("0.1.0");
+    expect(AGENT_VERSION).toBe("0.2.0");
   });
 
   it("parses args", () => {

@@ -1,0 +1,24 @@
+{
+	email a@vigilai.ift-solutions.com
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+VigilAI.ift-solutions.com, vigilai.ift-solutions.com {
+	encode gzip
+
+	# Agent ingest API
+	handle /v1/* {
+		reverse_proxy ingest:3002
+	}
+
+	# Control plane API
+	@api path /auth/* /orgs/* /internal/* /billing/* /invites/* /integrations/* /status/* /health
+	handle @api {
+		reverse_proxy api:3001
+	}
+
+	# Next.js dashboard + marketing
+	handle {
+		reverse_proxy web:3000
+	}
+}

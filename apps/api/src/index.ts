@@ -17,9 +17,16 @@ import {
   auditEvents,
   usageDaily,
   metricSamples,
+  metricSamples1h,
   silenceWindows,
 } from "@vigilai/db";
-import { PLAN_LIMITS, hostStatusFromLastSeen } from "@vigilai/shared";
+import {
+  PLAN_LIMITS,
+  WRITE_ROLES,
+  hostStatusFromLastSeen,
+  roleAllowed,
+  type MembershipRole,
+} from "@vigilai/shared";
 import { z } from "zod";
 import Stripe from "stripe";
 import { Queue } from "bullmq";
@@ -31,6 +38,7 @@ import {
   isPrivateOrMetadataUrl,
   verifyPassword,
 } from "./crypto.js";
+import { registerPhase2Routes } from "./phase2.js";
 
 const db = createDb();
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
@@ -160,6 +168,7 @@ async function buildApp() {
         threshold: 90,
         forMinutes: 5,
         severity: "warning",
+        ruleType: "threshold",
       },
       {
         orgId: org!.id,
@@ -169,6 +178,7 @@ async function buildApp() {
         threshold: 90,
         forMinutes: 5,
         severity: "warning",
+        ruleType: "threshold",
       },
       {
         orgId: org!.id,
@@ -178,6 +188,29 @@ async function buildApp() {
         threshold: 90,
         forMinutes: 10,
         severity: "critical",
+        ruleType: "threshold",
+      },
+      {
+        orgId: org!.id,
+        name: "CPU anomaly",
+        metric: "cpu.usage_pct",
+        operator: ">",
+        threshold: 0,
+        forMinutes: 1,
+        severity: "warning",
+        ruleType: "anomaly",
+        zscoreThreshold: 3,
+      },
+      {
+        orgId: org!.id,
+        name: "Memory anomaly",
+        metric: "mem.used_pct",
+        operator: ">",
+        threshold: 0,
+        forMinutes: 1,
+        severity: "warning",
+        ruleType: "anomaly",
+        zscoreThreshold: 3,
       },
     ]);
 
@@ -304,7 +337,7 @@ async function buildApp() {
     const user = await requireUser(req);
     const { orgId } = req.params as { orgId: string };
     const membership = await requireMembership(user.id, orgId);
-    if (membership.role === "readonly") {
+    if (!roleAllowed(membership.role as MembershipRole, WRITE_ROLES)) {
       return reply.code(403).send({ error: "Read-only role" });
     }
 
@@ -431,6 +464,40 @@ async function buildApp() {
       ? new Date(q.from)
       : new Date(Date.now() - 60 * 60 * 1000);
     const to = q.to ? new Date(q.to) : new Date();
+    const rangeMs = to.getTime() - from.getTime();
+    const useHourly = rangeMs > 6 * 60 * 60_000;
+
+    const [host] = await db
+      .select()
+      .from(hosts)
+      .where(and(eq(hosts.id, hostId), eq(hosts.orgId, orgId)))
+      .limit(1);
+    if (!host) return { metrics: [], resolution: "raw" };
+
+    if (useHourly) {
+      const conditions = [
+        eq(metricSamples1h.hostId, hostId),
+        gte(metricSamples1h.bucket, from),
+        sql`${metricSamples1h.bucket} <= ${to}`,
+      ];
+      if (q.metric) conditions.push(eq(metricSamples1h.metricName, q.metric));
+      const rows = await db
+        .select()
+        .from(metricSamples1h)
+        .where(and(...conditions))
+        .orderBy(metricSamples1h.bucket)
+        .limit(5000);
+      return {
+        resolution: "1h",
+        metrics: rows.map((r) => ({
+          metricName: r.metricName,
+          value: r.avgValue,
+          min: r.minValue,
+          max: r.maxValue,
+          time: r.bucket,
+        })),
+      };
+    }
 
     const conditions = [
       eq(metricSamples.hostId, hostId),
@@ -441,14 +508,6 @@ async function buildApp() {
       conditions.push(eq(metricSamples.metricName, q.metric));
     }
 
-    // Verify host belongs to org
-    const [host] = await db
-      .select()
-      .from(hosts)
-      .where(and(eq(hosts.id, hostId), eq(hosts.orgId, orgId)))
-      .limit(1);
-    if (!host) return { metrics: [] };
-
     const rows = await db
       .select()
       .from(metricSamples)
@@ -456,7 +515,7 @@ async function buildApp() {
       .orderBy(metricSamples.time)
       .limit(5000);
 
-    return { metrics: rows };
+    return { metrics: rows, resolution: "raw" };
   });
 
   app.get("/orgs/:orgId/hosts/:hostId/diagnostics", async (req) => {
@@ -513,19 +572,21 @@ async function buildApp() {
     const user = await requireUser(req);
     const { orgId } = req.params as { orgId: string };
     const membership = await requireMembership(user.id, orgId);
-    if (membership.role === "readonly") {
+    if (!roleAllowed(membership.role as MembershipRole, WRITE_ROLES)) {
       return reply.code(403).send({ error: "Read-only" });
     }
     const body = z
       .object({
         name: z.string(),
         metric: z.string(),
-        operator: z.enum([">", ">=", "<", "<=", "=="]),
-        threshold: z.number(),
+        operator: z.enum([">", ">=", "<", "<=", "=="]).default(">"),
+        threshold: z.number().default(0),
         forMinutes: z.number().int().min(1).default(5),
         severity: z.enum(["info", "warning", "critical"]).default("warning"),
         hostId: z.string().uuid().optional(),
         channels: z.array(z.string()).default(["email"]),
+        ruleType: z.enum(["threshold", "anomaly"]).default("threshold"),
+        zscoreThreshold: z.number().default(3),
       })
       .parse(req.body);
 
@@ -541,6 +602,8 @@ async function buildApp() {
         severity: body.severity,
         hostId: body.hostId,
         channels: body.channels,
+        ruleType: body.ruleType,
+        zscoreThreshold: body.zscoreThreshold,
       })
       .returning();
     return { rule };
@@ -946,6 +1009,14 @@ async function buildApp() {
       aiWaiting: await aiQueue.getWaitingCount(),
       notifyWaiting: await notifyQueue.getWaitingCount(),
     };
+  });
+
+  await registerPhase2Routes(app, {
+    db,
+    requireUser,
+    requireMembership,
+    writeAudit,
+    generateAgentToken,
   });
 
   return app;

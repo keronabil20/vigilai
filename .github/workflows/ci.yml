@@ -62,3 +62,10 @@ jobs:
       - run: pnpm --filter @vigilai/ingest typecheck
       - run: pnpm --filter @vigilai/workers typecheck
       - run: pnpm --filter @vigilai/agent typecheck
+      - name: Bundle agent (linux artifact stub)
+        run: |
+          pnpm --filter @vigilai/agent build
+          mkdir -p dist/agent
+          cp agent/dist/cli.js dist/agent/vigilai-agent.mjs
+          cp agent/install.sh dist/agent/
+          cp agent/install-windows.ps1 dist/agent/

@@ -10,10 +10,18 @@ type Metric = {
   time: string;
 };
 
+type LogLine = {
+  id: string;
+  path: string;
+  message: string;
+  time: string;
+};
+
 export default function HostDetailPage() {
   const params = useParams<{ hostId: string }>();
   const orgId =
     typeof window !== "undefined" ? localStorage.getItem("vigilai_org") : null;
+  const [tab, setTab] = useState<"metrics" | "logs">("metrics");
   const [host, setHost] = useState<{
     name: string;
     computedStatus: string;
@@ -23,6 +31,8 @@ export default function HostDetailPage() {
     lastError: string | null;
   } | null>(null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [logQ, setLogQ] = useState("");
 
   useEffect(() => {
     if (!orgId) return;
@@ -35,11 +45,17 @@ export default function HostDetailPage() {
         `/orgs/${orgId}/hosts/${params.hostId}/metrics`,
       );
       setMetrics(m.metrics);
+      if (tab === "logs") {
+        const l = await api<{ logs: LogLine[] }>(
+          `/orgs/${orgId}/hosts/${params.hostId}/logs?q=${encodeURIComponent(logQ)}`,
+        );
+        setLogs(l.logs);
+      }
     };
     load().catch(console.error);
     const t = setInterval(() => load().catch(() => {}), 15000);
     return () => clearInterval(t);
-  }, [orgId, params.hostId]);
+  }, [orgId, params.hostId, tab, logQ]);
 
   const byMetric = useMemo(() => {
     const map = new Map<string, Metric[]>();
@@ -80,33 +96,97 @@ export default function HostDetailPage() {
       {host.lastError && (
         <p style={{ color: "var(--danger)" }}>Last error: {host.lastError}</p>
       )}
-      <button type="button" className="secondary" onClick={downloadDiagnostics}>
-        Export diagnostics
-      </button>
-
-      <div className="grid" style={{ marginTop: "1.5rem", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))" }}>
-        {[...byMetric.entries()].map(([name, points]) => {
-          const latest = points[points.length - 1];
-          const values = points.map((p) => p.value);
-          const min = Math.min(...values);
-          const max = Math.max(...values);
-          return (
-            <div className="card" key={name}>
-              <div className="muted">{name}</div>
-              <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
-                {latest?.value ?? "—"}
-              </div>
-              <div className="muted" style={{ fontSize: "0.85rem" }}>
-                min {min} · max {max} · {points.length} pts
-              </div>
-              <Sparkline values={values} />
-            </div>
-          );
-        })}
-        {byMetric.size === 0 && (
-          <div className="card muted">No metrics yet. Start the agent.</div>
-        )}
+      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
+        <button
+          type="button"
+          className={tab === "metrics" ? undefined : "secondary"}
+          onClick={() => setTab("metrics")}
+        >
+          Metrics
+        </button>
+        <button
+          type="button"
+          className={tab === "logs" ? undefined : "secondary"}
+          onClick={() => setTab("logs")}
+        >
+          Logs
+        </button>
+        <button type="button" className="secondary" onClick={downloadDiagnostics}>
+          Export diagnostics
+        </button>
       </div>
+
+      {tab === "metrics" && (
+        <div
+          className="grid"
+          style={{
+            marginTop: "1.5rem",
+            gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+          }}
+        >
+          {[...byMetric.entries()].map(([name, points]) => {
+            const latest = points[points.length - 1];
+            const values = points.map((p) => p.value);
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            return (
+              <div className="card" key={name}>
+                <div className="muted">{name}</div>
+                <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>
+                  {latest?.value ?? "—"}
+                </div>
+                <div className="muted" style={{ fontSize: "0.85rem" }}>
+                  min {min} · max {max} · {points.length} pts
+                </div>
+                <Sparkline values={values} />
+              </div>
+            );
+          })}
+          {byMetric.size === 0 && (
+            <div className="card muted">No metrics yet. Start the agent.</div>
+          )}
+        </div>
+      )}
+
+      {tab === "logs" && (
+        <div className="card">
+          <div className="field">
+            <label>Filter</label>
+            <input
+              value={logQ}
+              onChange={(e) => setLogQ(e.target.value)}
+              placeholder="search message"
+            />
+          </div>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Path</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((l) => (
+                <tr key={l.id}>
+                  <td>{new Date(l.time).toLocaleString()}</td>
+                  <td>{l.path}</td>
+                  <td style={{ maxWidth: 420, wordBreak: "break-word" }}>
+                    {l.message}
+                  </td>
+                </tr>
+              ))}
+              {logs.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="muted">
+                    No logs. Run agent with --logs /var/log/syslog
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,10 +9,12 @@ import {
   hosts,
   organizations,
   metricSamples,
+  logLines,
 } from "@vigilai/db";
 import {
   HeartbeatPayloadSchema,
   MetricPayloadSchema,
+  LogBatchSchema,
   MIN_SUPPORTED_AGENT,
   compareSemver,
   hostStatusFromLastSeen,
@@ -210,7 +212,29 @@ async function main() {
       "metrics:ingested",
       JSON.stringify({ hostId: agent.hostId, orgId: agent.orgId, time: time.toISOString() }),
     );
+    await redis.incr("platform:ingest_count");
 
+    return { ok: true, written: rows.length };
+  });
+
+  app.post("/v1/ingest/logs", async (req, reply) => {
+    const agent = await resolveAgent(req.headers.authorization);
+    if (!agent) return reply.code(401).send({ error: "Invalid token" });
+    if (agent.paused) {
+      return reply.code(403).send({ error: "Ingest paused" });
+    }
+    if (!(await checkRateLimit(agent.hostId))) {
+      return reply.code(429).send({ error: "Rate limit exceeded" });
+    }
+
+    const body = LogBatchSchema.parse(req.body);
+    const rows = body.lines.map((l) => ({
+      hostId: agent.hostId,
+      time: l.ts ? new Date(l.ts) : new Date(),
+      path: l.path,
+      message: l.message.slice(0, 8000),
+    }));
+    await db.insert(logLines).values(rows);
     return { ok: true, written: rows.length };
   });
 

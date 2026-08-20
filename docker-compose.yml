@@ -1,0 +1,124 @@
+# Production stack for Hostinger VPS / Docker Compose
+# Domain: VigilAI.ift-solutions.com
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vigilai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: vigilai
+    volumes:
+      - vigilai_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vigilai -d vigilai"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - vigilai_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vigilai:${POSTGRES_PASSWORD}@postgres:5432/vigilai
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET}
+      WEB_URL: https://VigilAI.ift-solutions.com
+      API_URL: https://VigilAI.ift-solutions.com
+      INGEST_URL: https://VigilAI.ift-solutions.com
+      SUPPORT_STAFF_EMAILS: ${SUPPORT_STAFF_EMAILS:-support@ift-solutions.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      API_PORT: "3001"
+    expose:
+      - "3001"
+
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ingest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vigilai:${POSTGRES_PASSWORD}@postgres:5432/vigilai
+      REDIS_URL: redis://redis:6379
+      INGEST_PORT: "3002"
+    expose:
+      - "3002"
+
+  workers:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: workers
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vigilai:${POSTGRES_PASSWORD}@postgres:5432/vigilai
+      REDIS_URL: redis://redis:6379
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PAGERDUTY_ROUTING_KEY: ${PAGERDUTY_ROUTING_KEY:-}
+      WEB_URL: https://VigilAI.ift-solutions.com
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: https://VigilAI.ift-solutions.com
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - api
+      - ingest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  vigilai_pg:
+  vigilai_redis:
+  caddy_data:
+  caddy_config:

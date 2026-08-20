@@ -37,6 +37,29 @@ export default function BillingPage() {
     setUsage(u);
   }
 
+  async function exportData() {
+    if (!orgId) return;
+    const data = await api(`/orgs/${orgId}/export`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vigilai-export-${orgId}.json`;
+    a.click();
+  }
+
+  async function deleteOrg() {
+    if (!orgId) return;
+    if (!confirm("Delete this organization and all data? This cannot be undone.")) {
+      return;
+    }
+    await api(`/orgs/${orgId}`, { method: "DELETE" });
+    localStorage.removeItem("vigilai_org");
+    window.location.href = "/dashboard";
+  }
+
   return (
     <div>
       <h1>Billing & usage</h1>
@@ -57,6 +80,17 @@ export default function BillingPage() {
               <button type="button" className="secondary" onClick={() => upgrade("business")}>
                 Upgrade to Business
               </button>
+            </div>
+            <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem", flexWrap: "wrap" }}>
+              <button type="button" className="secondary" onClick={exportData}>
+                Export my data (GDPR)
+              </button>
+              <button type="button" className="secondary" onClick={deleteOrg}>
+                Delete organization
+              </button>
+              <a className="muted" href="/docs" style={{ alignSelf: "center" }}>
+                DPA / legal docs
+              </a>
             </div>
             {msg && <p style={{ color: "var(--accent)" }}>{msg}</p>}
           </div>

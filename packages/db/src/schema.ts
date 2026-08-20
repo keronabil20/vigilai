@@ -172,11 +172,13 @@ export const alertRules = pgTable("alert_rules", {
   hostId: uuid("host_id").references(() => hosts.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 200 }).notNull(),
   metric: varchar("metric", { length: 120 }).notNull(),
-  operator: varchar("operator", { length: 4 }).notNull(),
-  threshold: doublePrecision("threshold").notNull(),
+  operator: varchar("operator", { length: 4 }).notNull().default(">"),
+  threshold: doublePrecision("threshold").notNull().default(0),
   forMinutes: integer("for_minutes").notNull().default(5),
   severity: alertSeverityEnum("severity").notNull().default("warning"),
   enabled: boolean("enabled").notNull().default(true),
+  ruleType: varchar("rule_type", { length: 20 }).notNull().default("threshold"),
+  zscoreThreshold: doublePrecision("zscore_threshold").default(3),
   channels: jsonb("channels").$type<string[]>().default(["email"]),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -239,13 +241,148 @@ export const integrations = pgTable("integrations", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   type: varchar("type", { length: 40 }).notNull(),
   config: jsonb("config")
-    .$type<{ url?: string; email?: string; channel?: string }>()
+    .$type<{
+      url?: string;
+      email?: string;
+      channel?: string;
+      botToken?: string;
+      channelId?: string;
+      teamId?: string;
+      teamName?: string;
+    }>()
     .notNull(),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
+
+export const metricBaselines = pgTable(
+  "metric_baselines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    hostId: uuid("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    metricName: varchar("metric_name", { length: 120 }).notNull(),
+    ewma: doublePrecision("ewma").notNull(),
+    ewmvar: doublePrecision("ewmvar").notNull().default(0),
+    samples: integer("samples").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("metric_baselines_host_metric_uidx").on(
+      t.hostId,
+      t.metricName,
+    ),
+  ],
+);
+
+export const metricSamples1h = pgTable(
+  "metric_samples_1h",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    hostId: uuid("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    bucket: timestamp("bucket", { withTimezone: true }).notNull(),
+    metricName: varchar("metric_name", { length: 120 }).notNull(),
+    avgValue: doublePrecision("avg_value").notNull(),
+    minValue: doublePrecision("min_value").notNull(),
+    maxValue: doublePrecision("max_value").notNull(),
+    sampleCount: integer("sample_count").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("metric_samples_1h_uidx").on(
+      t.hostId,
+      t.metricName,
+      t.bucket,
+    ),
+    index("metric_samples_1h_host_bucket_idx").on(t.hostId, t.bucket),
+  ],
+);
+
+export const logLines = pgTable(
+  "log_lines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    hostId: uuid("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    time: timestamp("time", { withTimezone: true }).notNull(),
+    path: varchar("path", { length: 500 }).notNull(),
+    message: text("message").notNull(),
+  },
+  (t) => [
+    index("log_lines_host_time_idx").on(t.hostId, t.time),
+    index("log_lines_host_path_time_idx").on(t.hostId, t.path, t.time),
+  ],
+);
+
+export const invites = pgTable(
+  "invites",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: varchar("email", { length: 320 }).notNull(),
+    role: roleEnum("role").notNull().default("member"),
+    tokenHash: text("token_hash").notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("invites_token_hash_uidx").on(t.tokenHash)],
+);
+
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("password_reset_token_hash_uidx").on(t.tokenHash)],
+);
+
+export const hostingerConnections = pgTable("hostinger_connections", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: uuid("org_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  apiTokenEnc: text("api_token_enc").notNull(),
+  label: varchar("label", { length: 200 }).default("Hostinger"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const platformMetrics = pgTable(
+  "platform_metrics",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    value: doublePrecision("value").notNull(),
+    labels: jsonb("labels").$type<Record<string, string>>().default({}),
+    time: timestamp("time", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("platform_metrics_name_time_idx").on(t.name, t.time)],
+);
 
 export const auditEvents = pgTable(
   "audit_events",

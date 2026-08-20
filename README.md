@@ -58,3 +58,5 @@ Support staff: register with an email listed in `SUPPORT_STAFF_EMAILS` to access
 - [Support runbooks](docs/support/)
 - [Launch checklist](docs/LAUNCH_CHECKLIST.md)
 - [Load test](tests/load/ingest-k6.js)
+- [DPA template](docs/legal/DPA.md)
+- Status page: http://localhost:3000/status

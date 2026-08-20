@@ -10,16 +10,25 @@ import {
   hosts,
   integrations,
   metricSamples,
+  metricSamples1h,
+  metricBaselines,
+  logLines,
   organizations,
   silenceWindows,
   usageDaily,
   users,
   memberships,
+  platformMetrics,
 } from "@vigilai/db";
 import {
   PLAN_LIMITS,
+  RAW_METRICS_KEEP_HOURS,
+  ANOMALY_METRICS,
+  DEFAULT_ZSCORE_THRESHOLD,
   alertFingerprint,
+  anomalyFingerprint,
   evaluateCondition,
+  updateEwma,
   type AiSummary,
   type AlertSeverity,
 } from "@vigilai/shared";
@@ -126,8 +135,160 @@ async function metricSustained(
   };
 }
 
+async function fireAlert(opts: {
+  orgId: string;
+  hostId: string;
+  ruleId?: string;
+  fingerprint: string;
+  severity: AlertSeverity;
+  title: string;
+  message: string;
+  observedValue?: number;
+}) {
+  const [existing] = await db
+    .select()
+    .from(alerts)
+    .where(
+      and(
+        eq(alerts.fingerprint, opts.fingerprint),
+        inArray(alerts.status, ["open", "acknowledged"]),
+      ),
+    )
+    .limit(1);
+  if (existing) return existing;
+
+  try {
+    const [alert] = await db
+      .insert(alerts)
+      .values({
+        orgId: opts.orgId,
+        hostId: opts.hostId,
+        ruleId: opts.ruleId,
+        fingerprint: opts.fingerprint,
+        status: "open",
+        severity: opts.severity,
+        title: opts.title,
+        message: opts.message,
+        observedValue: opts.observedValue,
+      })
+      .returning();
+    await bumpUsage(opts.orgId, "alertsFired");
+    await connection.incr("platform:alerts_fired");
+    await notifyQueue.add("alert", { alertId: alert!.id }, { jobId: `notify:${alert!.id}` });
+    await aiQueue.add("summarize", { alertId: alert!.id }, { jobId: `ai:${alert!.id}` });
+    return alert!;
+  } catch (err) {
+    // Unique open-fingerprint race
+    const [again] = await db
+      .select()
+      .from(alerts)
+      .where(
+        and(
+          eq(alerts.fingerprint, opts.fingerprint),
+          inArray(alerts.status, ["open", "acknowledged"]),
+        ),
+      )
+      .limit(1);
+    if (again) return again;
+    throw err;
+  }
+}
+
+async function evaluateAnomalies(hostId: string, orgId: string) {
+  const anomalyRules = await db
+    .select()
+    .from(alertRules)
+    .where(
+      and(
+        eq(alertRules.orgId, orgId),
+        eq(alertRules.enabled, true),
+        eq(alertRules.ruleType, "anomaly"),
+        or(isNull(alertRules.hostId), eq(alertRules.hostId, hostId)),
+      ),
+    );
+
+  for (const metric of ANOMALY_METRICS) {
+    const latest = await latestMetric(hostId, metric);
+    if (!latest) continue;
+    const [prev] = await db
+      .select()
+      .from(metricBaselines)
+      .where(
+        and(
+          eq(metricBaselines.hostId, hostId),
+          eq(metricBaselines.metricName, metric),
+        ),
+      )
+      .limit(1);
+    const { state, zscore } = updateEwma(
+      prev
+        ? { ewma: prev.ewma, ewmvar: prev.ewmvar, samples: prev.samples }
+        : null,
+      latest.value,
+    );
+    if (prev) {
+      await db
+        .update(metricBaselines)
+        .set({
+          ewma: state.ewma,
+          ewmvar: state.ewmvar,
+          samples: state.samples,
+          updatedAt: new Date(),
+        })
+        .where(eq(metricBaselines.id, prev.id));
+    } else {
+      await db.insert(metricBaselines).values({
+        hostId,
+        metricName: metric,
+        ewma: state.ewma,
+        ewmvar: state.ewmvar,
+        samples: state.samples,
+      });
+    }
+
+    const matchingRule = anomalyRules.find((r) => r.metric === metric);
+    if (!matchingRule) continue;
+
+    const threshold =
+      matchingRule.zscoreThreshold ?? DEFAULT_ZSCORE_THRESHOLD;
+    const fp = anomalyFingerprint(hostId, metric);
+    const [open] = await db
+      .select()
+      .from(alerts)
+      .where(
+        and(
+          eq(alerts.fingerprint, fp),
+          inArray(alerts.status, ["open", "acknowledged"]),
+        ),
+      )
+      .limit(1);
+
+    const anomalous = zscore >= threshold;
+    if (anomalous) {
+      if (open) continue;
+      await fireAlert({
+        orgId,
+        hostId,
+        ruleId: matchingRule.id,
+        fingerprint: fp,
+        severity: matchingRule.severity,
+        title: matchingRule.name,
+        message: `${metric} z-score ${zscore.toFixed(2)} ≥ ${threshold} (value ${latest.value}, baseline ${state.ewma.toFixed(2)})`,
+        observedValue: latest.value,
+      });
+    } else if (open) {
+      await db
+        .update(alerts)
+        .set({ status: "resolved", resolvedAt: new Date() })
+        .where(eq(alerts.id, open.id));
+    }
+  }
+}
+
 async function evaluateHost(hostId: string, orgId: string) {
   if (await isSilenced(orgId, hostId)) return;
+
+  await evaluateAnomalies(hostId, orgId);
 
   const rules = await db
     .select()
@@ -141,6 +302,7 @@ async function evaluateHost(hostId: string, orgId: string) {
     );
 
   for (const rule of rules) {
+    if ((rule.ruleType ?? "threshold") === "anomaly") continue;
     const op = rule.operator as ">" | ">=" | "<" | "<=" | "==";
     const { sustained, value } = await metricSustained(
       hostId,
@@ -164,24 +326,16 @@ async function evaluateHost(hostId: string, orgId: string) {
 
     if (sustained && value !== undefined) {
       if (open) continue;
-      const [alert] = await db
-        .insert(alerts)
-        .values({
-          orgId,
-          hostId,
-          ruleId: rule.id,
-          fingerprint: fp,
-          status: "open",
-          severity: rule.severity,
-          title: rule.name,
-          message: `${rule.metric} ${rule.operator} ${rule.threshold} (observed ${value}) for ${rule.forMinutes}m`,
-          observedValue: value,
-        })
-        .returning();
-
-      await bumpUsage(orgId, "alertsFired");
-      await notifyQueue.add("alert", { alertId: alert!.id });
-      await aiQueue.add("summarize", { alertId: alert!.id });
+      await fireAlert({
+        orgId,
+        hostId,
+        ruleId: rule.id,
+        fingerprint: fp,
+        severity: rule.severity,
+        title: rule.name,
+        message: `${rule.metric} ${rule.operator} ${rule.threshold} (observed ${value}) for ${rule.forMinutes}m`,
+        observedValue: value,
+      });
     } else if (open && !sustained) {
       await db
         .update(alerts)
@@ -189,8 +343,6 @@ async function evaluateHost(hostId: string, orgId: string) {
         .where(eq(alerts.id, open.id));
     }
   }
-
-  // Host silent anomaly: no need for metric — check last_seen via heartbeat status elsewhere
 }
 
 function fallbackAiSummary(
@@ -458,6 +610,23 @@ async function deliverNotification(alertId: string) {
         console.error("Webhook delivery failed", err);
       }
     }
+    if (integ.type === "slack_oauth" && integ.config.botToken && integ.config.channelId) {
+      try {
+        await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${integ.config.botToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            channel: integ.config.channelId,
+            text: `[VigilAI] ${alert.title}: ${alert.message}`,
+          }),
+        });
+      } catch (err) {
+        console.error("Slack OAuth delivery failed", err);
+      }
+    }
     if (integ.type === "email" && integ.config.email) {
       console.log(
         `[email:console] To=${integ.config.email} Subject=[VigilAI] ${alert.title}`,
@@ -486,36 +655,17 @@ async function evaluateHostSilent() {
   for (const host of rows) {
     if (await isSilenced(host.orgId, host.id)) continue;
     const fp = `silent:${host.id}`;
-    const [open] = await db
-      .select()
-      .from(alerts)
-      .where(
-        and(
-          eq(alerts.fingerprint, fp),
-          inArray(alerts.status, ["open", "acknowledged"]),
-        ),
-      )
-      .limit(1);
-    if (open) continue;
-
     const ageMin = host.lastSeenAt
       ? Math.round((Date.now() - host.lastSeenAt.getTime()) / 60000)
       : 0;
-    const [alert] = await db
-      .insert(alerts)
-      .values({
-        orgId: host.orgId,
-        hostId: host.id,
-        fingerprint: fp,
-        status: "open",
-        severity: "critical",
-        title: "Host silent",
-        message: `No heartbeat from ${host.name} for ~${ageMin} minutes`,
-      })
-      .returning();
-    await bumpUsage(host.orgId, "alertsFired");
-    await notifyQueue.add("alert", { alertId: alert!.id });
-    await aiQueue.add("summarize", { alertId: alert!.id });
+    await fireAlert({
+      orgId: host.orgId,
+      hostId: host.id,
+      fingerprint: fp,
+      severity: "critical",
+      title: "Host silent",
+      message: `No heartbeat from ${host.name} for ~${ageMin} minutes`,
+    });
   }
 }
 
@@ -527,6 +677,91 @@ async function meterHosts() {
       .from(hosts)
       .where(eq(hosts.orgId, org.id));
     await bumpUsage(org.id, "hostsCounted", count[0]?.c ?? 0);
+  }
+}
+
+async function downsampleAndRetain() {
+  const cutoffRaw = new Date(Date.now() - RAW_METRICS_KEEP_HOURS * 3600_000);
+  // Aggregate raw samples older than 24h into hourly buckets
+  await db.execute(sql`
+    INSERT INTO metric_samples_1h (id, host_id, bucket, metric_name, avg_value, min_value, max_value, sample_count)
+    SELECT gen_random_uuid(), host_id,
+           date_trunc('hour', time) AS bucket,
+           metric_name,
+           avg(value), min(value), max(value), count(*)::int
+    FROM metric_samples
+    WHERE time < ${cutoffRaw}
+    GROUP BY host_id, date_trunc('hour', time), metric_name
+    ON CONFLICT (host_id, metric_name, bucket)
+    DO UPDATE SET
+      avg_value = EXCLUDED.avg_value,
+      min_value = EXCLUDED.min_value,
+      max_value = EXCLUDED.max_value,
+      sample_count = EXCLUDED.sample_count
+  `);
+
+  await db.delete(metricSamples).where(lte(metricSamples.time, cutoffRaw));
+
+  const orgs = await db.select().from(organizations);
+  for (const org of orgs) {
+    const limits = PLAN_LIMITS[org.plan];
+    const metricCutoff = new Date(
+      Date.now() - limits.retentionDays * 24 * 3600_000,
+    );
+    const logCutoff = new Date(
+      Date.now() - limits.logRetentionDays * 24 * 3600_000,
+    );
+    const orgHosts = await db
+      .select({ id: hosts.id })
+      .from(hosts)
+      .where(eq(hosts.orgId, org.id));
+    const ids = orgHosts.map((h) => h.id);
+    if (!ids.length) continue;
+    await db
+      .delete(metricSamples1h)
+      .where(
+        and(
+          inArray(metricSamples1h.hostId, ids),
+          lte(metricSamples1h.bucket, metricCutoff),
+        ),
+      );
+    await db
+      .delete(logLines)
+      .where(
+        and(inArray(logLines.hostId, ids), lte(logLines.time, logCutoff)),
+      );
+  }
+  console.log("[retention] downsample + purge complete");
+}
+
+async function recordPlatformSnapshot() {
+  const alertsFired = Number((await connection.get("platform:alerts_fired")) ?? 0);
+  const ingestCount = Number((await connection.get("platform:ingest_count")) ?? 0);
+  await db.insert(platformMetrics).values([
+    { name: "alerts_fired_total", value: alertsFired, time: new Date() },
+    { name: "ingest_count_total", value: ingestCount, time: new Date() },
+  ]);
+}
+
+async function pageIfUnhealthy() {
+  const key = process.env.PAGERDUTY_ROUTING_KEY;
+  if (!key) return;
+  try {
+    await db.execute(sql`SELECT 1`);
+  } catch {
+    await fetch("https://events.pagerduty.com/v2/enqueue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        routing_key: key,
+        event_action: "trigger",
+        payload: {
+          summary: "VigilAI platform: database unreachable",
+          severity: "critical",
+          source: "vigilai-workers",
+        },
+      }),
+    });
   }
 }
 
@@ -542,7 +777,6 @@ new Worker(
 new Worker(
   "notifications",
   async (job) => {
-    // Prefer AI summary first — small delay if needed
     await new Promise((r) => setTimeout(r, 500));
     await deliverNotification(job.data.alertId as string);
   },
@@ -570,11 +804,22 @@ setInterval(() => {
   meterHosts().catch(console.error);
 }, 60 * 60_000);
 
-console.log("Workers started (alerts, AI, notifications, metering)");
+setInterval(() => {
+  downsampleAndRetain().catch(console.error);
+}, 6 * 60 * 60_000);
+
+setInterval(() => {
+  recordPlatformSnapshot().catch(console.error);
+  pageIfUnhealthy().catch(console.error);
+}, 5 * 60_000);
+
+console.log("Workers started (alerts, AI, notifications, metering, retention)");
 
 export {
   evaluateCondition,
   fallbackAiSummary,
   formatSummaryMd,
   metricSustained,
+  updateEwma,
+  fireAlert,
 };

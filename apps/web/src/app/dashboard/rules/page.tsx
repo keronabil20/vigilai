@@ -12,12 +12,15 @@ type Rule = {
   forMinutes: number;
   severity: string;
   enabled: boolean;
+  ruleType?: string;
+  zscoreThreshold?: number | null;
 };
 
 export default function RulesPage() {
   const orgId =
     typeof window !== "undefined" ? localStorage.getItem("vigilai_org") : null;
   const [rules, setRules] = useState<Rule[]>([]);
+  const [ruleType, setRuleType] = useState<"threshold" | "anomaly">("threshold");
 
   async function load() {
     if (!orgId) return;
@@ -33,18 +36,24 @@ export default function RulesPage() {
     e.preventDefault();
     if (!orgId) return;
     const fd = new FormData(e.currentTarget);
+    const type = String(fd.get("ruleType") || "threshold") as
+      | "threshold"
+      | "anomaly";
     await api(`/orgs/${orgId}/alert-rules`, {
       method: "POST",
       body: JSON.stringify({
         name: fd.get("name"),
         metric: fd.get("metric"),
-        operator: fd.get("operator"),
-        threshold: Number(fd.get("threshold")),
-        forMinutes: Number(fd.get("forMinutes")),
+        operator: fd.get("operator") || ">",
+        threshold: Number(fd.get("threshold") || 0),
+        forMinutes: Number(fd.get("forMinutes") || 5),
         severity: fd.get("severity"),
+        ruleType: type,
+        zscoreThreshold: Number(fd.get("zscoreThreshold") || 3),
       }),
     });
     e.currentTarget.reset();
+    setRuleType("threshold");
     await load();
   }
 
@@ -54,6 +63,19 @@ export default function RulesPage() {
       <form className="card" onSubmit={onSubmit} style={{ margin: "1.25rem 0" }}>
         <div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
           <div className="field">
+            <label>Type</label>
+            <select
+              name="ruleType"
+              value={ruleType}
+              onChange={(e) =>
+                setRuleType(e.target.value as "threshold" | "anomaly")
+              }
+            >
+              <option value="threshold">threshold</option>
+              <option value="anomaly">anomaly (z-score)</option>
+            </select>
+          </div>
+          <div className="field">
             <label>Name</label>
             <input name="name" required />
           </div>
@@ -61,23 +83,38 @@ export default function RulesPage() {
             <label>Metric</label>
             <input name="metric" defaultValue="cpu.usage_pct" required />
           </div>
-          <div className="field">
-            <label>Operator</label>
-            <select name="operator" defaultValue=">">
-              <option value=">">{">"}</option>
-              <option value=">=">{">="}</option>
-              <option value="<">{"<"}</option>
-              <option value="<=">{"<="}</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Threshold</label>
-            <input name="threshold" type="number" defaultValue={90} required />
-          </div>
-          <div className="field">
-            <label>For minutes</label>
-            <input name="forMinutes" type="number" defaultValue={5} required />
-          </div>
+          {ruleType === "threshold" ? (
+            <>
+              <div className="field">
+                <label>Operator</label>
+                <select name="operator" defaultValue=">">
+                  <option value=">">{">"}</option>
+                  <option value=">=">{">="}</option>
+                  <option value="<">{"<"}</option>
+                  <option value="<=">{"<="}</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Threshold</label>
+                <input name="threshold" type="number" defaultValue={90} required />
+              </div>
+              <div className="field">
+                <label>For minutes</label>
+                <input name="forMinutes" type="number" defaultValue={5} required />
+              </div>
+            </>
+          ) : (
+            <div className="field">
+              <label>Z-score threshold</label>
+              <input
+                name="zscoreThreshold"
+                type="number"
+                step="0.1"
+                defaultValue={3}
+                required
+              />
+            </div>
+          )}
           <div className="field">
             <label>Severity</label>
             <select name="severity" defaultValue="warning">
@@ -95,6 +132,7 @@ export default function RulesPage() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Type</th>
               <th>Condition</th>
               <th>Severity</th>
               <th>Enabled</th>
@@ -104,8 +142,11 @@ export default function RulesPage() {
             {rules.map((r) => (
               <tr key={r.id}>
                 <td>{r.name}</td>
+                <td>{r.ruleType ?? "threshold"}</td>
                 <td>
-                  {r.metric} {r.operator} {r.threshold} for {r.forMinutes}m
+                  {r.ruleType === "anomaly"
+                    ? `${r.metric} z≥${r.zscoreThreshold ?? 3}`
+                    : `${r.metric} ${r.operator} ${r.threshold} for ${r.forMinutes}m`}
                 </td>
                 <td>{r.severity}</td>
                 <td>{r.enabled ? "yes" : "no"}</td>

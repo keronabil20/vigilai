@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { cpus, freemem, totalmem, loadavg, hostname, platform, release, uptime } from "node:os";
 import { execSync } from "node:child_process";
 
-export const AGENT_VERSION = "0.1.0";
+export const AGENT_VERSION = "0.2.0";
 
 export type CollectedMetrics = Record<string, number>;
 
@@ -98,12 +98,38 @@ export function hostMeta() {
 }
 
 export function parseArgs(argv: string[]) {
-  const out: { token?: string; url?: string; interval?: number } = {};
+  const out: {
+    token?: string;
+    url?: string;
+    interval?: number;
+    logs?: string[];
+  } = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--token") out.token = argv[++i];
     else if (a === "--url") out.url = argv[++i];
     else if (a === "--interval") out.interval = Number(argv[++i]);
+    else if (a === "--logs") {
+      out.logs = (argv[++i] ?? "").split(",").filter(Boolean);
+    }
+  }
+  return out;
+}
+
+export function readLogTail(paths: string[], maxLines = 20): { path: string; message: string; ts: string }[] {
+  const out: { path: string; message: string; ts: string }[] = [];
+  const now = new Date().toISOString();
+  for (const p of paths) {
+    try {
+      if (!existsSync(p)) continue;
+      const raw = readFileSync(p, "utf8");
+      const lines = raw.split("\n").filter(Boolean).slice(-maxLines);
+      for (const message of lines) {
+        out.push({ path: p, message: message.slice(0, 4000), ts: now });
+      }
+    } catch {
+      // ignore
+    }
   }
   return out;
 }

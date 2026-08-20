@@ -47,12 +47,29 @@ export default function IntegrationsPage() {
     }
   }
 
+  async function startSlack() {
+    if (!orgId) return;
+    try {
+      const res = await api<{ url: string }>(
+        `/orgs/${orgId}/integrations/slack/start`,
+      );
+      window.location.href = res.url;
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   return (
     <div>
       <h1>Integrations</h1>
       <p className="muted">
         Webhook URLs to private/metadata IPs are blocked (SSRF protection).
       </p>
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <button type="button" onClick={startSlack}>
+          Connect Slack (OAuth)
+        </button>
+      </div>
       <form className="card" onSubmit={onSubmit} style={{ margin: "1.25rem 0" }}>
         <div className="field">
           <label>Type</label>

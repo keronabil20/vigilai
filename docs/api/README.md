@@ -56,3 +56,14 @@ Headers: `Authorization: Bearer <token>`, optional `Idempotency-Key`
 - `GET /internal/hosts/:hostId/diagnostics`
 - `POST /internal/tenants/:orgId/flags` `{ aiEnabled?, ingestPaused? }`
 - `GET /internal/audit`
+
+## Phase 2
+
+- `POST /auth/forgot-password`, `POST /auth/reset-password`
+- `GET /orgs/:orgId/members`, `POST /orgs/:orgId/invites`, `POST /invites/accept`
+- `GET /orgs/:orgId/hosts/:hostId/logs`
+- `GET /orgs/:orgId/export`, `DELETE /orgs/:orgId`
+- Slack OAuth + Hostinger connect routes
+- `GET /status/public`
+- Ingest: `POST /v1/ingest/logs`
+

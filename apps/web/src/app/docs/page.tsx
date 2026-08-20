@@ -26,6 +26,19 @@ export default function DocsPage() {
         <code>http://localhost:3002</code>. OpenAPI-style route list is in{" "}
         <code>docs/api/README.md</code>.
       </p>
+      <h2>Legal</h2>
+      <p>
+        GDPR export/delete is available under Billing. DPA template:{" "}
+        <code>docs/legal/DPA.md</code>. Public status:{" "}
+        <Link href="/status">/status</Link>.
+      </p>
+      <h2>Phase 2 features</h2>
+      <ul>
+        <li>Anomaly (z-score) rules + threshold rules</li>
+        <li>Org invites, password reset, org switcher, RBAC</li>
+        <li>Log shipping (<code>--logs</code>), Slack OAuth, Hostinger connect</li>
+        <li>Metrics retention / 1h downsample by plan</li>
+      </ul>
     </div>
   );
 }
