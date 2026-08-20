@@ -1,5 +1,9 @@
-# Production stack for Hostinger VPS / Docker Compose
+# Production stack for Hostinger VPS
 # Domain: VigilAI.ift-solutions.com
+# Host nginx terminates TLS and proxies:
+#   /v1/* → 127.0.0.1:3092 (ingest)
+#   API paths → 127.0.0.1:3091 (api)
+#   /* → 127.0.0.1:3090 (web)
 
 services:
   postgres:
@@ -50,8 +54,8 @@ services:
       SUPPORT_STAFF_EMAILS: ${SUPPORT_STAFF_EMAILS:-support@ift-solutions.com}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       API_PORT: "3001"
-    expose:
-      - "3001"
+    ports:
+      - "127.0.0.1:3091:3001"
 
   ingest:
     build:
@@ -68,8 +72,8 @@ services:
       DATABASE_URL: postgresql://vigilai:${POSTGRES_PASSWORD}@postgres:5432/vigilai
       REDIS_URL: redis://redis:6379
       INGEST_PORT: "3002"
-    expose:
-      - "3002"
+    ports:
+      - "127.0.0.1:3092:3002"
 
   workers:
     build:
@@ -99,26 +103,9 @@ services:
       - api
     environment:
       NEXT_PUBLIC_API_URL: https://VigilAI.ift-solutions.com
-    expose:
-      - "3000"
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      - web
-      - api
-      - ingest
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - "127.0.0.1:3090:3000"
 
 volumes:
   vigilai_pg:
   vigilai_redis:
-  caddy_data:
-  caddy_config:

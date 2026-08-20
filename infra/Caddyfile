@@ -1,9 +1,8 @@
 {
-	email a@vigilai.ift-solutions.com
-	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	auto_https off
 }
 
-VigilAI.ift-solutions.com, vigilai.ift-solutions.com {
+:80 {
 	encode gzip
 
 	# Agent ingest API

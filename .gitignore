@@ -4,7 +4,9 @@ dist
 .turbo
 .env
 .env.local
+infra/prod.env
 *.log
+
 coverage
 .DS_Store
 agent/data

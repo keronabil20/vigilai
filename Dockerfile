@@ -20,6 +20,8 @@ FROM deps AS build
 COPY packages ./packages
 COPY apps ./apps
 COPY agent ./agent
+ARG NEXT_PUBLIC_API_URL=https://VigilAI.ift-solutions.com
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN pnpm --filter @vigilai/shared build \
  && pnpm --filter @vigilai/db build \
  && pnpm --filter @vigilai/api build \
