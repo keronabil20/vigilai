@@ -39,6 +39,7 @@ COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/
 COPY --from=build /app/packages/db/dist ./packages/db/dist
 COPY --from=build /app/packages/db/package.json ./packages/db/
+COPY --from=build /app/packages/db/src/bootstrap.sql ./packages/db/dist/bootstrap.sql
 COPY --from=build /app/packages/db/src/bootstrap.sql ./packages/db/src/bootstrap.sql
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/
